@@ -1,38 +1,8 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# Dependency directories
-node_modules/
-
-# Optional: Build artifacts
-dist/
-build/
-coverage/
-
-# Optional: Environment variables
-.env
-.env.local
-.env.*.local
-
-# Optional: IDE and OS files
-.idea/
-.vscode/
-*.swp
-.DS_Store
-Thumbs.db
-
-# Optional: npm package manager files
-package-lock.json
-# yarn.lock (uncomment if you don't want to commit yarn.lock)
-
-# Optional: Testing files
-*.spec.js
-*.test.js
-
-# Optional: Other temporary files
-tmp/
+node_modules
+.env*
+*.bak
+.gitignore.bak
+password-reset.html
+password-reset.html
+firewood-app
+cs50

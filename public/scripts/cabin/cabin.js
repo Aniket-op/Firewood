@@ -1,404 +1,613 @@
-import Stream from "./Stream.js"
-import Video from "./Video.js"
-import { UserStream } from "./UserStream.js"
+import Stream from "./Stream.js";
+import Video from "./Video.js";
+import { UserStream } from "./UserStream.js";
 
-const socket = io('/')
-const peer = new Peer(USER_ID, {
-    secure: true,
-    host: 'firewood-peerjs-server.herokuapp.com',
-    port: 443
-})
+// Constants
+const VIDEO_GRID_ID = "video-grid";
+const IDEAL_VIDEO_WIDTH = 1920;
+const IDEAL_VIDEO_HEIGHT = 1080;
+const LEAVE_REDIRECT_DELAY = 450;
 
-const videoGrid = "video-grid"
+// State
+const state = {
+    socket: io('/'),
+    peer: new Peer(USER_ID),
+    localStream: null,
+    originalStream: null,
+    screenStream: null,
+    users: {},
+    peers: {},
+    facing: "user",
+    isScreenSharing: false,
+    hasLeft: false,
+    gridNumber: 1
+};
 
-var localStream;
-var userCount = 1;
-var users = {}
-var peers = {}
+window.appState = state;
 
-var facing = "user"
-var localVideo;
+// Sounds
+const sounds = {
+    userLeave: new Audio('.././sounds/userLeave.ogg'),
+    userJoin: new Audio('.././sounds/userJoin.ogg'),
+    leave: new Audio('.././sounds/leave.ogg')
+};
 
-var userLeaveSound = new Audio('.././sounds/userLeave.ogg')
-var userJoinSound = new Audio('.././sounds/userJoin.ogg')
-var gridNumber = 1;
-// Checking the SupportedConstraints of the device
-const supports = navigator.mediaDevices.getSupportedConstraints();
+// Check what the device supports
+const deviceCapabilities = navigator.mediaDevices.getSupportedConstraints();
+const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-/* const flipButton = document.getElementById("flip-camera")
+console.log("Device capabilities:", deviceCapabilities);
+console.log("Is mobile device:", isMobileDevice);
 
-if (!supports.facingMode) {
-    // flipButton.remove()
-}
-else {
-    flipButton.addEventListener('click', () => {
-        flipCamera()
-        console.log('flip')
-    })
-}
-
-
-*/
-console.log(supports)
-
-
-// creating and getting a new Stream
-new Stream().getLocal().then(
-    stream => {
-        // Turning stream into new UserStream
-        const userStream = new UserStream(USER_ID, USERNAME, stream, true)
-        console.log(stream)
-        localStream = stream
-        // Constructing the video element
-        const constructedLocalVideo = new Video(userStream.constructLocalVideo(`You (${USERNAME})`))
-        constructedLocalVideo.appendGrid(`${videoGrid}${gridNumber}`)
-
-        // Printing out our media stream resolution (For convenience!)
-        console.log(`Width: ${stream.getVideoTracks()[0].getSettings().width} Height: ${stream.getVideoTracks()[0].getSettings().height}`)
-
-        // Emitting that we (the current user, which is us on the client side) have joint this specific room; and here are our details (id, username)
-        socket.emit('join-cabin', CABIN_ADDRESS, USER_ID, USERNAME)
-
-        // Whenever we are called - run this code
-        peer.on('call', call => {
-            // Answer the call
-            call.answer(localStream)
-            // Whenever we receive a stream from the caller - run this code
-            call.on('stream', userVideoStream => {
-                // Create a new stream out of the data of the user
-                const newUserStream = new UserStream(call.metadata.id, call.metadata.username, userVideoStream)
-                //Create a constructed video element out of the data
-                const constructedNewVideo = new Video(newUserStream.constructLocalVideo())
-                //Adding the constructed video to the grid - checking if the user is already added to the grid/alraedy initialized in our 'users' object
-                if (!users[call.metadata.id]) {constructedNewVideo.appendGrid(`${videoGrid}${gridNumber}`); calculateGrid()}
-                // Add the users video to the list (object, really) of 'users'
-                users[call.metadata.id] = constructedNewVideo
-            })
+// Flickity carousel setup
+const flkty = new Flickity('.main-gallery', {
+    contain: true,
+    wrapAround: true,
+    draggable: ">1"
+});
 
 
-            // Whenever the call from the user closes, delete the data relative to the user
-            call.on('close', () => {
-                if (users[call.metadata.id]) users[call.metadata.id].getVideo().remove()
-                delete users[call.metadata.id]
-                peers[call.metadata.id].close()
-            })
-
-            // Also add the call to the peers!
-            peers[call.metadata.id] = call
-        })
+// Initialization
 
 
-
-        // Whenever a new user connects, the code inside is run; thus we get the new user's: id and username
-        socket.on('user-connected', (userId, username) => {
-            console.log(`${username} (${userId}) connected.`)
-            //Play join sound
-            userJoinSound.play()
-            // We connect to this new user; by sending him our stream
-            connectToNewUser(USERNAME, USER_ID, userId, username,/* Our stream -> */ stream)
-        })
+async function initialize() {
+    try {
+        const stream = await new Stream().getLocal();
+        handleInitialStream(stream);
+        setupPeerListeners();
+        setupSocketListeners();
+    } catch (error) {
+        console.error("Failed to initialize:", error);
+        alert("Failed to access camera and microphone. Please check your permissions.");
     }
-)
+}
 
-// When a user disconnects - run this code
-socket.on('user-disconnected', (id, username) => {
-    console.log(peers, users)
-    // Logging the disconnection
-    console.log(`${username} (${id}) disconnected.`)
+function handleInitialStream(stream) {
+    state.localStream = stream;
+    state.originalStream = stream;
 
-    // Remove that users video element
-    if(document.getElementById(`div-${id}`)) document.getElementById(`div-${id}`).remove()
+    const userStream = new UserStream(USER_ID, USERNAME, stream, true);
+    const videoElement = new Video(userStream.constructLocalVideo(`You (${USERNAME})`));
+    videoElement.appendGrid(`${VIDEO_GRID_ID}${state.gridNumber}`);
 
-    //Calculate grid
-    calculateGrid()
-
-    // Remove him from the 'users' and 'peers' objects; and close the peer connection.
-    delete users[id]
-    //Play leave sound
-    userLeaveSound.play()
-    if (peers[id]) {
-        peers[id].close();
-        delete peers[id];
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        console.log(`Video resolution: ${settings.width}x${settings.height}`);
     }
 
-    console.log(peers, users)
+    state.socket.emit('join-cabin', CABIN_ADDRESS, USER_ID, USERNAME);
+}
 
 
-})
+// Peer connections
 
 
+function setupPeerListeners() {
+    state.peer.on('call', handleIncomingCall);
+}
 
+function handleIncomingCall(call) {
+    // Answer the call with our stream
+    call.answer(state.localStream);
 
-// Whenever a new user joins, we connect to them
-async function connectToNewUser(username, userId, newUserId, newUsername, stream) {
-    console.log("Called 'connectToNewUser()")
-    //Data to send to user with call
-    const options = {metadata: {id: userId, username: username }}
+    call.on('stream', userVideoStream => {
+        addRemoteUser(call.metadata.id, call.metadata.username, userVideoStream);
+    });
 
-    // We call up the new user!
-    const call = peer.call(newUserId, stream, options)
-
-    call.on('stream', /* Stream of new user -> */ (newStream) => {
-        // Creating a new stream out of it!
-        console.log(users, peers)
-        const newUserStream = new UserStream(newUserId, newUsername, newStream)
-        const constructedNewVideo = new Video(newUserStream.constructLocalVideo())
-
-        //Adding the constructed video to the grid - and checking if he is already added
-        if (!users[newUserId]) {constructedNewVideo.appendGrid(`${videoGrid}${gridNumber}`); calculateGrid()}
-
-        // Add the new user to our 'users' object
-        users[newUserId] = constructedNewVideo
-    })
-
-    // Whenever the call closes, delete the data relative to the user
     call.on('close', () => {
-        if (users[newUserId]) users[newUserId].getVideo().remove()
-        delete users[newUserId]
-        peers[newUserId].close()
-    })
+        removeUser(call.metadata.id);
+    });
 
-    // Add the call to 'peers'
-    peers[newUserId] = call
+    state.peers[call.metadata.id] = call;
+}
+
+async function connectToNewUser(userId, username, stream) {
+    const options = {
+        metadata: {
+            id: USER_ID,
+            username: USERNAME
+        }
+    };
+
+    // Call the new user
+    const call = state.peer.call(userId, stream, options);
+
+    call.on('stream', remoteStream => {
+        addRemoteUser(userId, username, remoteStream);
+    });
+
+    call.on('close', () => {
+        removeUser(userId);
+    });
+
+    state.peers[userId] = call;
+}
+
+function addRemoteUser(userId, username, stream) {
+    // Don't add duplicates
+    if (state.users[userId]) {
+        console.log(`User ${username} already exists, skipping...`);
+        return;
+    }
+
+    const userStream = new UserStream(userId, username, stream);
+    const videoElement = new Video(userStream.constructLocalVideo());
+
+    videoElement.appendGrid(`${VIDEO_GRID_ID}${state.gridNumber}`);
+    calculateGrid();
+
+    state.users[userId] = videoElement;
+    console.log(`Added user: ${username} (${userId})`);
+}
+
+function removeUser(userId) {
+    const userVideo = state.users[userId];
+    if (userVideo) {
+        userVideo.getVideo().remove();
+        delete state.users[userId];
+    }
+
+    const peerConnection = state.peers[userId];
+    if (peerConnection) {
+        peerConnection.close();
+        delete state.peers[userId];
+    }
 }
 
 
-/* async function flipCamera() {
-    console.log("Flipping camera...")
-    const tracks = localStream.getTracks()
-    const currFacingMode = localStream.getVideoTracks()[0].getSettings().facingMode
-    console.log(facing)
-    tracks.forEach(track => { if (track.kind === "video") track.stop;})
+// Socket events
 
-    let flippedStream;
 
-    if (facing == "user") {
-        await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: {ideal: 1920},
-                height: {ideal: 1080},
-                facingMode: 'environment'
-            },
-        }).then(stream => {flippedStream = stream}).catch(err => console.log(err))
+function setupSocketListeners() {
+    state.socket.on('user-connected', handleUserConnected);
+    state.socket.on('user-disconnected', handleUserDisconnected);
+}
 
-        facing = "environment"
-    }
-    else {
-        await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: {ideal: 1920},
-                height: {ideal: 1080},
-                facingMode: 'user'
-            },
-        }).then(stream => {flippedStream = stream}).catch(err => console.log(err))
+function handleUserConnected(userId, username) {
+    console.log(`${username} (${userId}) connected`);
+    sounds.userJoin.play().catch(err => console.log("Audio play blocked:", err));
+    connectToNewUser(userId, username, state.localStream);
+}
 
-        facing = "user"
+function handleUserDisconnected(userId, username) {
+    console.log(`${username} (${userId}) disconnected`);
+
+    if (userId === USER_ID) {
+        console.log("You left the room");
+        return;
     }
 
-    for (let [key, value] of Object.entries(peer.connections)) {
-        console.log(peer.connections)
-        console.log(key)
-        console.log(peer.connections[key][0].peerConnection.getSenders()[1])
-        peer.connections[key][0].peerConnection.getSenders()[1].replaceTrack(flippedStream.getTracks()[0])
+    const userElement = document.getElementById(`div-${userId}`);
+    if (userElement) {
+        userElement.remove();
     }
 
-    console.log(localStream.getVideoTracks()[0])
+    removeUser(userId);
+    calculateGrid();
+    sounds.userLeave.play().catch(err => console.log("Audio play blocked:", err));
+}
 
-} */
+
+// Track management (for switching camera/screen)
 
 
-// Setting up flkty for carousels
-var flkty = new Flickity('.main-gallery', {"contain": true, "wrapAround": true, "draggable": ">1"})
+function replaceVideoTrackForAllPeers(newVideoTrack) {
+    Object.values(state.peers).forEach(call => {
+        const sender = call.peerConnection
+            .getSenders()
+            .find(s => s.track && s.track.kind === 'video');
 
+        if (sender) {
+            sender.replaceTrack(newVideoTrack).catch(err => {
+                console.error("Error replacing track for peer:", err);
+            });
+        }
+    });
+}
+
+function updateLocalVideoElement(stream) {
+    const localVideoElement = document.getElementById(`video-${USER_ID}`);
+    if (localVideoElement) {
+        localVideoElement.srcObject = stream;
+    }
+}
+
+async function switchVideoSource(getNewStream) {
+    try {
+        const newStream = await getNewStream();
+
+        // Stop and remove old video track
+        const oldVideoTrack = state.localStream.getVideoTracks()[0];
+        if (oldVideoTrack) {
+            oldVideoTrack.stop();
+            state.localStream.removeTrack(oldVideoTrack);
+        }
+
+        // Add new video track
+        const newVideoTrack = newStream.getVideoTracks()[0];
+        state.localStream.addTrack(newVideoTrack);
+
+        // Update the video element and all peer connections
+        updateLocalVideoElement(state.localStream);
+        replaceVideoTrackForAllPeers(newVideoTrack);
+
+        return newStream;
+    } catch (error) {
+        console.error("Error switching video source:", error);
+        throw error;
+    }
+}
+
+
+// Camera flip
+
+
+async function flipCamera() {
+    if (!deviceCapabilities.facingMode) {
+        alert("Camera flipping is not supported on this device");
+        return;
+    }
+
+    const newFacingMode = state.facing === "user" ? "environment" : "user";
+
+    try {
+        await switchVideoSource(async () => {
+            return navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: IDEAL_VIDEO_WIDTH },
+                    height: { ideal: IDEAL_VIDEO_HEIGHT },
+                    facingMode: newFacingMode
+                },
+                audio: true
+            });
+        });
+
+        state.facing = newFacingMode;
+        console.log(`Camera flipped to ${state.facing}`);
+    } catch (error) {
+        console.error("Error flipping camera:", error);
+        alert("Failed to flip camera. Please try again.");
+    }
+}
+
+
+// Screen sharing
+
+
+async function toggleScreenShare() {
+    if (state.isScreenSharing) {
+        await stopScreenShare();
+    } else {
+        await startScreenShare();
+    }
+}
+
+async function startScreenShare() {
+    // iOS doesn't support this
+    if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        alert("Screen sharing is not supported on iOS devices");
+        return;
+    }
+
+    try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: "always" },
+            audio: false
+        });
+
+        state.screenStream = screenStream;
+
+        await switchVideoSource(async () => screenStream);
+
+        state.isScreenSharing = true;
+        updateScreenShareButton(true);
+
+        // Prevent video mirroring during screen share
+        const localVideoContainer = document.getElementById(`div-${USER_ID}`);
+        if (localVideoContainer) {
+            localVideoContainer.classList.add('screen-sharing');
+        }
+
+        // Handle when user stops sharing via browser UI
+        const screenTrack = screenStream.getVideoTracks()[0];
+        screenTrack.onended = () => {
+            stopScreenShare();
+        };
+
+        console.log("Screen sharing started");
+    } catch (error) {
+        console.error("Error starting screen share:", error);
+        if (error.name !== 'NotAllowedError') {
+            alert("Failed to share screen. Please try again.");
+        }
+    }
+}
+
+async function stopScreenShare() {
+    if (!state.screenStream) return;
+
+    // Stop all screen share tracks
+    state.screenStream.getTracks().forEach(track => track.stop());
+    state.screenStream = null;
+
+    try {
+        // Go back to camera
+        await switchVideoSource(async () => {
+            return navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: IDEAL_VIDEO_WIDTH },
+                    height: { ideal: IDEAL_VIDEO_HEIGHT },
+                    facingMode: state.facing
+                },
+                audio: true
+            });
+        });
+
+        state.isScreenSharing = false;
+        updateScreenShareButton(false);
+
+        // Remove screen sharing class to restore mirroring
+        const localVideoContainer = document.getElementById(`div-${USER_ID}`);
+        if (localVideoContainer) {
+            localVideoContainer.classList.remove('screen-sharing');
+        }
+
+        console.log("Screen sharing stopped");
+    } catch (error) {
+        console.error("Error stopping screen share:", error);
+        alert("Failed to return to camera. Please refresh the page.");
+    }
+}
+
+function updateScreenShareButton(isSharing) {
+    const btn = document.getElementById("share-screen");
+    if (!btn) return;
+
+    const icon = btn.children[0];
+    if (isSharing) {
+        icon.classList.remove("bi-display");
+        icon.classList.add("bi-camera-video-fill");
+        btn.setAttribute("title", "Stop sharing");
+    } else {
+        icon.classList.add("bi-display");
+        icon.classList.remove("bi-camera-video-fill");
+        btn.setAttribute("title", "Share screen");
+    }
+}
+
+
+// Grid layout calculation
 
 
 function calculateGrid() {
-    var userCount = document.querySelectorAll(".video-container").length
-    gridNumber = Math.ceil(userCount / 4)
+    const userCount = document.querySelectorAll(".video-container").length;
+    state.gridNumber = Math.ceil(userCount / 4);
 
-    var grids = document.querySelectorAll(".video-grid")
-    var gridCount = grids.length
+    const grids = document.querySelectorAll(".video-grid");
+    const type = getComputedStyle(document.documentElement)
+        .getPropertyValue("--type");
 
-    console.log(grids)
+    grids.forEach((grid, index) => {
+        const videoContainers = grid.querySelectorAll(".video-container");
+        const gridLength = videoContainers.length;
 
-    // names of variables for ease
-    const gridRows = "--grid-rows"
-    const gridColumns = "--grid-columns"
+        // Remove empty grids
+        if (gridLength === 0) {
+            flkty.remove(grid);
+            state.gridNumber--;
+            return;
+        }
 
-    for (let i=0; i < gridCount; i++) {
-        console.log(grids[i])
-        let gridLength = grids[i].querySelectorAll(".video-container").length
-        console.log(gridLength)
-        if(gridLength == 0) {flkty.remove(grids[i]); gridNumber--; continue;}
-
+        // Create new grid if more than 4 users
         if (gridLength > 4) {
-            const container = grids[i].querySelector('.video-container')
-            gridNumber++
-            const newGrid = document.createElement('div')
-            newGrid.className = "video-grid gallery-cell"
-            newGrid.setAttribute('id', `${videoGrid}${i+2}`)
-            newGrid.appendChild(container)
-            flkty.append(newGrid)
-            flkty.selectCell(i+1)
-            continue;
+            const container = videoContainers[0];
+            state.gridNumber++;
+
+            const newGrid = document.createElement('div');
+            newGrid.className = "video-grid gallery-cell";
+            newGrid.id = `${VIDEO_GRID_ID}${index + 2}`;
+            newGrid.appendChild(container);
+
+            flkty.append(newGrid);
+            flkty.selectCell(index + 1);
+            return;
         }
 
-        console.log("Calculating...")
-        var type = getComputedStyle(document.documentElement).getPropertyValue("--type")
+        // Figure out grid dimensions
+        const layout = calculateGridLayout(gridLength, type);
+        grid.style.setProperty("--grid-rows", layout.rows);
+        grid.style.setProperty("--grid-columns", layout.columns);
+    });
+}
 
+function calculateGridLayout(userCount, orientation) {
+    const isVertical = orientation === "vertical";
 
-        console.log(gridLength, type, gridRows, gridColumns)
+    const layouts = {
+        vertical: [
+            { rows: 1, columns: 1 }, // 1 user
+            { rows: 2, columns: 1 }, // 2 users
+            { rows: 3, columns: 1 }, // 3 users
+            { rows: 2, columns: 2 }  // 4 users
+        ],
+        horizontal: [
+            { rows: 1, columns: 1 }, // 1 user
+            { rows: 1, columns: 2 }, // 2 users
+            { rows: 1, columns: 3 }, // 3 users
+            { rows: 2, columns: 2 }  // 4 users
+        ]
+    };
 
-        let rows = parseInt(getComputedStyle(grids[i]).getPropertyValue(gridRows))
-        let columns = parseInt(getComputedStyle(grids[i]).getPropertyValue(gridColumns))
-
-        console.log(rows, columns)
-
-        if (type == " vertical ") {
-            console.log("Vertical window.")
-            if (gridLength == 1) {
-                grids[i].style.setProperty(gridRows, 1)
-                grids[i].style.setProperty(gridColumns, 1)
-            }
-
-            else if (gridLength == 2) {
-                grids[i].style.setProperty(gridRows, 2)
-                grids[i].style.setProperty(gridColumns, 1)
-            }
-
-            else if (gridLength == 3) {
-                grids[i].style.setProperty(gridRows, 3)
-                grids[i].style.setProperty(gridColumns, 1)
-            }
-
-            else if (gridLength == 4) {
-                grids[i].style.setProperty(gridRows, 2)
-                grids[i].style.setProperty(gridColumns, 2)
-            }
-        }
-        else {
-            console.log("Horizontal window.")
-            if (gridLength == 1) {
-                grids[i].style.setProperty(gridRows, 1)
-                grids[i].style.setProperty(gridColumns, 1)
-            }
-            else if (gridLength == 2) {
-                grids[i].style.setProperty(gridRows, 1)
-                grids[i].style.setProperty(gridColumns, 2)
-            }
-            else if (gridLength == 3) {
-                grids[i].style.setProperty(gridRows, 1)
-                grids[i].style.setProperty(gridColumns, 3)
-            }
-            else if (gridLength == 4) {
-                grids[i].style.setProperty(gridRows, 2)
-                grids[i].style.setProperty(gridColumns, 2)
-            }
-        }
-    }
-
-
+    const layoutSet = isVertical ? layouts.vertical : layouts.horizontal;
+    return layoutSet[userCount - 1] || { rows: 2, columns: 2 };
 }
 
 
+// Media controls (mic/camera toggle)
 
 
+function toggleMediaTrack(trackType) {
+    const track = state.localStream
+        .getTracks()
+        .find(t => t.kind === trackType);
 
+    if (!track) return;
 
+    track.enabled = !track.enabled;
+    updateControlButton(trackType, track.enabled);
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Button stuff
-const toggleCamera = document.getElementById("toggle-camera")
-const toggleMic = document.getElementById("toggle-mic")
-const leaveBtn = document.getElementById("leave")
-
-let left = false
-
-toggleCamera.addEventListener('click', (e) => {
-    e.preventDefault()
-    toggle("video")
-})
-
-toggleMic.addEventListener('click', (e) => {
-    e.preventDefault()
-    toggle("audio")
-})
-
-var leaveSound = new Audio('.././sounds/leave.ogg')
-leaveBtn.addEventListener('click', async (e) => {
-    if (!left) {
-        e.preventDefault()
-        leaveSound.play()
-        left = true
-        setTimeout(()=> {
-            window.location.replace("/")
-        }, 450)
-
-    }
-})
-
-const toggle = (target) => {
-    if (target != "video" && target != "audio") return false
-
-    let track;
-
-    if (target == "video") {
-        track = localStream.getTracks().find(track => track.kind === 'video')
-        if (track.enabled) {
-            track.enabled = false
-            toggleCamera.children[0].classList.remove("bi-camera-video-fill")
-            toggleCamera.children[0].classList.add("bi-camera-video-off-fill", "toggled")
+function updateControlButton(trackType, isEnabled) {
+    const buttons = {
+        video: {
+            element: document.getElementById("toggle-camera"),
+            onIcon: "bi-camera-video-fill",
+            offIcon: "bi-camera-video-off-fill"
+        },
+        audio: {
+            element: document.getElementById("toggle-mic"),
+            onIcon: "bi-mic-fill",
+            offIcon: "bi-mic-mute-fill"
         }
-        else {
-            track.enabled = true
-            toggleCamera.children[0].classList.add("bi-camera-video-fill")
-            toggleCamera.children[0].classList.remove("bi-camera-video-off-fill", "toggled")
-        }
-    }
+    };
 
-    else {
-        track = localStream.getTracks().find(track => track.kind === 'audio')
-        if (track.enabled) {
-            track.enabled = false
-            toggleMic.children[0].classList.remove("bi-mic-fill")
-            toggleMic.children[0].classList.add("bi-mic-mute-fill", "toggled")
-        }
-        else {
-            track.enabled = true
-            toggleMic.children[0].classList.add("bi-mic-fill")
-            toggleMic.children[0].classList.remove("bi-mic-mute-fill", "toggled")
-        }
+    const button = buttons[trackType];
+    if (!button || !button.element) return;
+
+    const icon = button.element.children[0];
+
+    if (isEnabled) {
+        icon.classList.add(button.onIcon);
+        icon.classList.remove(button.offIcon, "toggled");
+    } else {
+        icon.classList.remove(button.onIcon);
+        icon.classList.add(button.offIcon, "toggled");
     }
 }
 
-const debugButton = document.getElementById("debug")
 
-if (debugButton) {
-    debugButton.addEventListener('click', () => {
-    console.log(peers, users)
-    calculateGrid()
-})
+// Disconnect and cleanup
+
+
+function disconnect() {
+    // Stop all tracks
+    if (state.localStream) {
+        state.localStream.getTracks().forEach(track => track.stop());
+    }
+    if (state.screenStream) {
+        state.screenStream.getTracks().forEach(track => track.stop());
+    }
+
+    // Close all peer connections
+    Object.values(state.peers).forEach(peer => {
+        if (peer.close) peer.close();
+    });
+
+    // Destroy peer and notify server
+    if (state.peer && state.peer.destroy) {
+        state.peer.destroy();
+    }
+
+    state.socket.emit('leave-cabin');
+    console.log("Disconnected and cleaned up");
 }
 
-window.onbeforeunload = () => {
-    peer.close()
-    socket.emit('disconnect')
+function handleLeave() {
+    if (state.hasLeft) return;
+
+    disconnect();
+    sounds.leave.play().catch(err => console.log("Audio play blocked:", err));
+    state.hasLeft = true;
+
+    setTimeout(() => {
+        window.location.replace("/");
+    }, LEAVE_REDIRECT_DELAY);
 }
 
-window.onresize = calculateGrid
+
+// Event listeners
+
+
+function setupEventListeners() {
+    const toggleCamera = document.getElementById("toggle-camera");
+    const toggleMic = document.getElementById("toggle-mic");
+    const leaveBtn = document.getElementById("leave");
+    const flipCameraBtn = document.getElementById("flip-camera");
+    const shareScreenBtn = document.getElementById("share-screen");
+    const debugBtn = document.getElementById("debug");
+
+    if (toggleCamera) {
+        toggleCamera.addEventListener('click', (e) => {
+            e.preventDefault();
+            toggleMediaTrack("video");
+        });
+    }
+
+    if (toggleMic) {
+        toggleMic.addEventListener('click', (e) => {
+            e.preventDefault();
+            toggleMediaTrack("audio");
+        });
+    }
+
+    if (leaveBtn) {
+        leaveBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            handleLeave();
+        });
+    }
+
+    // Flip camera button - hide if not mobile or not supported
+    if (flipCameraBtn) {
+        if (!deviceCapabilities.facingMode || !isMobileDevice) {
+            flipCameraBtn.style.display = 'none';
+        } else {
+            flipCameraBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                flipCamera();
+            });
+        }
+    }
+
+    // Screen share - hide on iOS since it's not supported
+    if (shareScreenBtn) {
+        if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+            shareScreenBtn.style.display = 'none';
+        } else {
+            shareScreenBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                toggleScreenShare();
+            });
+        }
+    }
+
+    // Debug button
+    if (debugBtn) {
+        debugBtn.addEventListener('click', () => {
+            console.log("Current state:", state);
+            console.log("Peers:", state.peers);
+            console.log("Users:", state.users);
+            calculateGrid();
+        });
+    }
+
+    // Window events
+    window.addEventListener('resize', calculateGrid);
+    window.addEventListener('beforeunload', disconnect);
+}
+
+
+// Start app
+
+
+// Initialize when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        setupEventListeners();
+        initialize();
+    });
+} else {
+    setupEventListeners();
+    initialize();
+}

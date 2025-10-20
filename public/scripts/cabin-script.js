@@ -1,5 +1,3 @@
-// Unused - ignore
-
 const socket = io('/')
 
 var peer = new Peer(USER_ID)
@@ -14,7 +12,7 @@ navigator.mediaDevices.getUserMedia({
     video: true,
     audio: true
 }).then(stream => {
-
+    
     myVideoStream = stream
     myVideo = document.createElement('video')
 
@@ -72,7 +70,7 @@ const addVideoStream = (username, id, video, stream, self=false) => {
     // Creating the video stream, div
     video.srcObject = stream
     console.log(username, id, video, stream, self)
-    if (peers[id] != undefined || self ) {
+    if (peers[id] != undefined || self ) { 
         const videoDiv = document.createElement('div')
         videoDiv.classList.add("video-container")
         const userText = document.createElement('h3')
@@ -83,7 +81,7 @@ const addVideoStream = (username, id, video, stream, self=false) => {
         userText.classList.add("user-text")
 
         if (self) video.muted = true
-
+        
         videoDiv.append(userTextDiv)
         videoDiv.append(video)
         video.addEventListener('loadedmetadata', () => {
@@ -92,7 +90,7 @@ const addVideoStream = (username, id, video, stream, self=false) => {
         const videoGrid = document.getElementById("video-grid")
         videoGrid.append(videoDiv)
     }
-
+        
 
 
 }
